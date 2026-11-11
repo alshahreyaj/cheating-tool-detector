@@ -1,0 +1,12 @@
+# Locally built binaries
+/detector
+/detector.exe
+/detector-linux
+/detector-linux-*
+/dist/
+/build/
+
+# Go and editor artifacts
+*.test
+coverage.out
+.DS_Store

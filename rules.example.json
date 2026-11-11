@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "name": "Remote access software",
+      "contains": ["anydesk", "teamviewer", "rustdesk"]
+    },
+    {
+      "name": "Common memory inspection or debugging tools",
+      "contains": ["cheatengine", "gameconqueror", "scanmem", "x64dbg", "x32dbg", "ollydbg"]
+    }
+  ]
+}

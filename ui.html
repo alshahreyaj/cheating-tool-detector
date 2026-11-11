@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Cheating Tool Detector</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e8edf5; background: #0c1119; font-synthesis: none; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(ellipse at 15% 0%, #182639 0, #0c1119 48rem); }
+    main { width: min(1040px, calc(100% - 36px)); margin: 0 auto; padding: 52px 0 64px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 30px; }
+    .eyebrow { color: #87a8d4; font-size: 12px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+    h1 { margin: 8px 0 0; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.04em; }
+    .sub { color: #9aa9bb; margin: 10px 0 0; }
+    button { border: 1px solid #456c9f; border-radius: 10px; background: #244875; color: #fff; padding: 11px 16px; font: inherit; font-weight: 650; cursor: pointer; }
+    button:hover { background: #2c5b91; } button:disabled { opacity: .6; cursor: wait; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 24px 0; }
+    .card, section { border: 1px solid #263345; border-radius: 14px; background: #121a25e8; }
+    .card { padding: 19px 20px; }
+    .label { color: #93a3b7; font-size: 13px; }
+    .value { margin-top: 8px; font-size: 29px; font-weight: 700; letter-spacing: -.04em; }
+    section { overflow: hidden; margin-top: 16px; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; padding: 17px 20px; border-bottom: 1px solid #263345; }
+    h2 { margin: 0; font-size: 16px; }
+    .hint { color: #8c9caf; font-size: 12px; }
+    .empty, .error { padding: 28px 20px; color: #a9b6c7; }
+    .empty strong { display: block; color: #e2eaf4; margin-bottom: 5px; }
+    .error { color: #ffaaa8; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    th, td { padding: 13px 20px; border-bottom: 1px solid #202c3b; white-space: nowrap; }
+    th { color: #8e9fb3; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    code { color: #c9dcff; background: #1b2b40; border-radius: 5px; padding: 3px 6px; }
+    .status { color: #8e9fb3; font-size: 12px; margin-top: 12px; }
+    .foot { color: #718197; font-size: 12px; line-height: 1.6; margin-top: 22px; }
+    @media (max-width: 620px) { main { padding-top: 32px; } header { align-items: flex-start; flex-direction: column; } .cards { grid-template-columns: 1fr; gap: 9px; } .card { padding: 14px 16px; } .value { font-size: 24px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow">Device scan</div>
+        <h1>Cheating Tool Detector</h1>
+        <p class="sub">Review process indicators and screen-capture exclusions on this device.</p>
+      </div>
+      <button id="scanButton" type="button">Scan now</button>
+    </header>
+    <div class="cards">
+      <div class="card"><div class="label">Processes scanned</div><div class="value" id="processCount">—</div></div>
+      <div class="card"><div class="label">Indicator matches</div><div class="value" id="matchCount">—</div></div>
+      <div class="card"><div class="label">Capture-excluded windows</div><div class="value" id="exclusionCount">—</div></div>
+    </div>
+    <div id="error" class="error" hidden></div>
+    <section>
+      <div class="section-head"><h2>Process indicators</h2><span class="hint">Based on the built-in or selected rules</span></div>
+      <div id="findings"></div>
+    </section>
+    <section>
+      <div class="section-head"><h2>Capture-excluded windows</h2><span class="hint">Windows display-affinity signals</span></div>
+      <div id="exclusions"></div>
+    </section>
+    <div class="status" id="status">Starting scan…</div>
+    <p class="foot">A match is an indicator for review, not proof of cheating. Legitimate apps can use screen-capture exclusion. This tool scans locally; its interface is served only on this device.</p>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const escapeText = (value) => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+    function table(headers, rows) {
+      if (!rows.length) return '<div class="empty"><strong>No matches found</strong>Nothing matched in this scan.</div>';
+      return `<div class="table-wrap"><table><thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+    }
+    async function scan() {
+      const button = $("scanButton");
+      button.disabled = true;
+      button.textContent = "Scanning…";
+      $("error").hidden = true;
+      try {
+        const response = await fetch("/api/scan", { cache: "no-store" });
+        if (!response.ok) throw new Error(await response.text());
+        const report = await response.json();
+        const findings = report.findings || [];
+        const exclusions = report.capture_exclusions || [];
+        $("processCount").textContent = report.processes_scanned;
+        $("matchCount").textContent = findings.length;
+        $("exclusionCount").textContent = exclusions.length;
+        $("findings").innerHTML = table(["Process", "PID", "Rule", "Matched indicator"], findings.map(f => `<tr><td>${escapeText(f.process)}</td><td>${escapeText(f.pid)}</td><td>${escapeText(f.rule)}</td><td><code>${escapeText(f.indicator)}</code></td></tr>`));
+        if (report.platform === "linux") {
+          $("exclusions").innerHTML = '<div class="empty"><strong>Not available on Linux</strong>There is no portable system-wide window capture-exclusion signal for this desktop session.</div>';
+        } else {
+          $("exclusions").innerHTML = table(["Process", "PID", "Window", "Affinity"], exclusions.map(f => `<tr><td>${escapeText(f.process || "Unknown process")}</td><td>${escapeText(f.pid)}</td><td>${escapeText(f.window || "Untitled window")}</td><td><code>${escapeText(f.affinity)}</code></td></tr>`));
+        }
+        $("status").textContent = `Last scan: ${new Date(report.scanned_at).toLocaleString()} · ${report.platform}`;
+      } catch (error) {
+        $("error").textContent = `Scan failed: ${error.message}`;
+        $("error").hidden = false;
+        $("status").textContent = "The scan could not be completed.";
+      } finally {
+        button.disabled = false;
+        button.textContent = "Scan now";
+      }
+    }
+    $("scanButton").addEventListener("click", scan);
+    scan();
+  </script>
+</body>
+</html>
