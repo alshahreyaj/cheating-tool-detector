@@ -21,6 +21,10 @@ var (
 	getWindowDisplayAffinity  = user32.NewProc("GetWindowDisplayAffinity")
 	getWindowThreadProcessID  = user32.NewProc("GetWindowThreadProcessId")
 	getWindowTextW            = user32.NewProc("GetWindowTextW")
+	kernel32                  = syscall.NewLazyDLL("kernel32.dll")
+	openProcess               = kernel32.NewProc("OpenProcess")
+	queryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
+	closeHandle               = kernel32.NewProc("CloseHandle")
 )
 
 func listProcesses() ([]Process, error) {
@@ -46,15 +50,40 @@ func listProcesses() ([]Process, error) {
 		if err != nil { // Ignore localized status/error lines from tasklist.
 			continue
 		}
-		processes = append(processes, Process{PID: pid, Name: strings.TrimSpace(row[0])})
+		process := Process{PID: pid, Name: strings.TrimSpace(row[0])}
+		if executablePath := processExecutablePath(pid); executablePath != "" {
+			process.ExecutablePath = executablePath
+		}
+		processes = append(processes, process)
 	}
 	return processes, nil
 }
 
+func fingerprintProcess(process *Process) {
+	if process.ExecutablePath != "" {
+		fingerprintExecutable(process, process.ExecutablePath, process.ExecutablePath)
+	}
+}
+
+func processExecutablePath(pid int) string {
+	handle, _, _ := openProcess.Call(0x1000, 0, uintptr(pid)) // PROCESS_QUERY_LIMITED_INFORMATION
+	if handle == 0 {
+		return ""
+	}
+	defer closeHandle.Call(handle)
+	buffer := make([]uint16, 32768)
+	length := uint32(len(buffer))
+	ok, _, _ := queryFullProcessImageName.Call(handle, 0, uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&length)))
+	if ok == 0 || length == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buffer[:length])
+}
+
 func listCaptureExclusions(processes []Process) ([]CaptureExclusion, error) {
-	processNames := make(map[int]string, len(processes))
+	processByPID := make(map[int]Process, len(processes))
 	for _, process := range processes {
-		processNames[process.PID] = process.Name
+		processByPID[process.PID] = process
 	}
 	var exclusions []CaptureExclusion
 	callback := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
@@ -65,6 +94,7 @@ func listCaptureExclusions(processes []Process) ([]CaptureExclusion, error) {
 		}
 		var pid uint32
 		getWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+		process := processByPID[int(pid)]
 		var title [512]uint16
 		length, _, _ := getWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&title[0])), uintptr(len(title)))
 		windowTitle := syscall.UTF16ToString(title[:length])
@@ -73,10 +103,12 @@ func listCaptureExclusions(processes []Process) ([]CaptureExclusion, error) {
 			affinityName = "WDA_EXCLUDEFROMCAPTURE"
 		}
 		exclusions = append(exclusions, CaptureExclusion{
-			PID:      int(pid),
-			Process:  processNames[int(pid)],
-			Window:   windowTitle,
-			Affinity: affinityName,
+			PID:              int(pid),
+			Process:          process.Name,
+			ExecutablePath:   process.ExecutablePath,
+			ExecutableSHA256: process.ExecutableSHA256,
+			Window:           windowTitle,
+			Affinity:         affinityName,
 		})
 		return 1
 	})

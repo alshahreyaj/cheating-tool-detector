@@ -29,10 +29,23 @@ func listProcesses() ([]Process, error) {
 		}
 		name := strings.TrimSpace(string(nameBytes))
 		if name != "" {
-			processes = append(processes, Process{PID: pid, Name: name})
+			process := Process{PID: pid, Name: name}
+			exeLink := filepath.Join("/proc", entry.Name(), "exe")
+			if executablePath, err := os.Readlink(exeLink); err == nil {
+				process.ExecutablePath = executablePath
+			}
+			processes = append(processes, process)
 		}
 	}
 	return processes, nil
+}
+
+func fingerprintProcess(process *Process) {
+	if process.ExecutablePath == "" {
+		return
+	}
+	filePath := filepath.Join("/proc", strconv.Itoa(process.PID), "exe")
+	fingerprintExecutable(process, filePath, process.ExecutablePath)
 }
 
 func listCaptureExclusions([]Process) ([]CaptureExclusion, error) {

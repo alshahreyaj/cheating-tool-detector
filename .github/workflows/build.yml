@@ -11,38 +11,62 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build ${{ matrix.goos }} amd64
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            extension: ""
-          - goos: windows
-            extension: .exe
+  build-linux:
+    name: Build Linux amd64
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"
+      - name: Resolve Go modules
+        run: go mod tidy
+      - name: Install graphics build dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
       - name: Build binary
         env:
-          GOOS: ${{ matrix.goos }}
           GOARCH: amd64
+          CGO_ENABLED: 1
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o "dist/detector-${GOOS}-amd64${{ matrix.extension }}" .
+          go build -trimpath -ldflags="-s -w" -o dist/detector-linux-amd64 .
       - uses: actions/upload-artifact@v4
         with:
-          name: detector-${{ matrix.goos }}-amd64
-          path: dist/detector-${{ matrix.goos }}-amd64${{ matrix.extension }}
+          name: detector-linux-amd64
+          path: dist/detector-linux-amd64
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows amd64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: Resolve Go modules
+        run: go mod tidy
+      - name: Build binary
+        env:
+          GOARCH: amd64
+          CGO_ENABLED: 1
+          CC: gcc
+        run: New-Item -ItemType Directory -Force dist | Out-Null; go build -trimpath -ldflags="-s -w -H=windowsgui" -o dist/detector-windows-amd64.exe .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: detector-windows-amd64
+          path: dist/detector-windows-amd64.exe
           if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -16,3 +16,5 @@ func listProcesses() ([]Process, error) {
 func listCaptureExclusions([]Process) ([]CaptureExclusion, error) {
 	return []CaptureExclusion{}, nil
 }
+
+func fingerprintProcess(*Process) {}

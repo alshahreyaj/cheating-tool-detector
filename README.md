@@ -1,55 +1,70 @@
-# cheating-tool-detector
+# Cheating Tool Detector
 
-A small process-indicator scanner for Linux and Windows, with a browser-based local desktop interface and an optional command-line mode. The interface and default rules are embedded in the binary; custom JSON rules are optional.
+Cheating Tool Detector is a small desktop app for Windows and Linux. It checks running applications for signs that may deserve a closer look, and keeps a local history of the applications it flags.
 
-## Build
+It is a screening aid, not a way to prove that someone is cheating. A match can have a legitimate explanation, and a tool that is not on its indicator list may not be found.
 
-Install Go 1.22 or newer, then build for the current platform:
+## What it does
+
+- Runs a scan when you ask, or repeats scans at an interval you choose. The default interval is 30 seconds.
+- Comes with ready-to-use indicators, so you do not need to create a rules file to get started.
+- Checks application names and, when available, their file locations and file fingerprints.
+- On Windows, reports windows that use a standard setting to stay out of supported screen captures, along with the application that owns each window.
+- Shows an alert in the app and system tray when it finds a match, and records when flagged applications appear, disappear, or change.
+- Works as a desktop app, with an optional command-line mode for people who prefer terminal output.
+
+## How detection works
+
+The app looks at the programs currently running on the device and compares them with its indicators. The built-in list includes names associated with remote access software and common memory inspection or debugging tools. These names are clues for review, not a verdict.
+
+If a program matches, the app includes details that can help identify it, such as its process name, file location, and a SHA-256 fingerprint when available. A fingerprint is a summary of the program file that can distinguish one build from another, even when names are similar. Optional custom rules can check specific names, file locations, or fingerprints.
+
+Windows has an additional check: the app looks for windows marked to be excluded from supported screen capture and connects each window to its owning application. Some legitimate apps use this setting for privacy or protected content. Linux does not provide one standard system-wide way to check this, so this screen-capture check is currently Windows-only.
+
+## Getting started
+
+Launch the app, set the scan interval in seconds, then select **Start monitoring**. It scans right away and continues at the selected interval. Use **Scan now** for a one-time scan. The interval is remembered the next time you open the app.
+
+When a match is found, the app marks its icon and can show a desktop notification. On systems with a tray, closing the window hides the app there; use the tray menu to reopen it or quit.
+
+No rules file is needed for normal use. The optional custom rules file is for administrators who want to add their own indicators. For example:
+
+```json
+{
+  "rules": [
+    { "name": "Example app", "contains": ["example-process"] },
+    { "name": "Known file", "executable_contains": ["/opt/example/app"] },
+    { "name": "Known build", "sha256": ["paste-a-64-character-file-fingerprint-here"] }
+  ]
+}
+```
+
+Start the app with `-rules rules.json` to use that file. For terminal use, add `-cli`; `-cli -json` prints machine-readable results, and `-cli -watch 5s` repeats scans every five seconds.
+
+## Detection history and privacy
+
+The app keeps its detection history on the device, in the current user's application settings folder. It records flagged applications and changes to their detection status; it does not keep a record of every ordinary running application. The scanner does not send scan results to a server.
+
+## What it cannot detect
+
+This tool only finds indicators it can observe. It may miss browser-based services, renamed or modified programs, and tools that do not match its rules. On Windows, the screen-capture check recognizes a standard Windows setting; it does not reveal every technique or guarantee what a particular recording or sharing app can see. Access restrictions may also prevent the app from identifying some running programs or reading their files.
+
+Treat every result as a prompt to investigate in context, not as proof of misconduct.
+
+## Download or build
+
+Ready-to-run Linux and Windows builds are available as workflow artifacts in the repository's **Actions** tab. Version-tagged builds are attached to GitHub Releases when releases are published. These builds currently target 64-bit PCs.
+
+To build on your own system, install Go 1.22 or newer and a C compiler. The desktop interface also needs graphics development libraries. On Debian or Ubuntu, install them with:
+
+```sh
+sudo apt-get install gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
+```
+
+Then build for the operating system you are using:
 
 ```sh
 go build -o detector .
 ```
 
-To cross-compile:
-
-```sh
-GOOS=linux GOARCH=amd64 go build -o detector-linux .
-GOOS=windows GOARCH=amd64 go build -o detector.exe .
-```
-
-GitHub Actions builds Linux and Windows amd64 binaries on pushes, pull requests, and manual runs. Open the workflow run in the repository's **Actions** tab to download its build artifacts. To publish downloadable binaries on a GitHub Release, create and push a version tag:
-
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The tagged workflow attaches `detector-linux-amd64` and `detector-windows-amd64.exe` to the generated release.
-
-## Run
-
-The default command starts the local desktop interface in your browser. It has built-in indicators, so no rules file is needed:
-
-```sh
-./detector
-```
-
-Keep the terminal open while using the interface. It listens only on localhost. For terminal output instead, use `-cli`:
-
-```sh
-./detector -cli
-./detector -cli -json
-./detector -cli -watch 5s
-```
-
-To provide custom indicators, pass a JSON rules file in either mode: `./detector -rules rules.json`.
-
-Each rule has a display name and one or more case-insensitive substrings matched against the process name. A process can produce more than one finding if it matches multiple indicators. In CLI mode, the program exits with status `0` when there are no matches, `2` when there is at least one match, and `1` if scanning or configuration fails.
-
-On Linux, names are read from `/proc/<pid>/comm`. On Windows, the built-in `tasklist.exe` command supplies process names and PIDs. Processes that disappear during a scan are skipped where possible.
-
-On Windows, the scanner also enumerates top-level windows and checks `GetWindowDisplayAffinity`. It reports windows marked `WDA_EXCLUDEFROMCAPTURE` (and the related `WDA_MONITOR` mode), including the owning PID and window title where available. This can surface apps that intentionally keep their window out of supported capture paths even when their process name does not match a rule. It is only a review signal: legitimate apps use this setting too, and Microsoft documents it as a content-protection aid rather than a security boundary. Linux currently has no portable system-wide query for per-window capture exclusion, so this signal is Windows-only.
-
-## Limits
-
-This is an indicator scanner, not proof of cheating. The sample rules are illustrative and may produce false positives; maintain rules appropriate to your environment. Process-name matching will not detect browser-based services or renamed tools. It does not inspect process memory, capture screens, or collect command lines. Linux visibility depends on `/proc` permissions, and Windows results depend on the current account's process visibility. Window-affinity checking only finds apps using the standard Windows API and does not detect every way an app might be absent from a particular recorder's output.
+On Windows, run `go build -ldflags="-H=windowsgui" -o detector.exe .` from a Go-enabled terminal. Cross-building the desktop app requires a compiler and graphics libraries for the target system.
