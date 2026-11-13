@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -28,7 +29,12 @@ var (
 )
 
 func listProcesses() ([]Process, error) {
-	output, err := exec.Command("tasklist.exe", "/FO", "CSV", "/NH").Output()
+	command := exec.Command("tasklist.exe", "/FO", "CSV", "/NH")
+	command.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run tasklist.exe: %w", err)
 	}
@@ -117,4 +123,42 @@ func listCaptureExclusions(processes []Process) ([]CaptureExclusion, error) {
 		return nil, fmt.Errorf("enumerate desktop windows: %v", callErr)
 	}
 	return exclusions, nil
+}
+
+func endTrackedProcess(pid int, expectedName, expectedPath string) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid process ID")
+	}
+	if pid == 4 {
+		return fmt.Errorf("refusing to end the Windows system process")
+	}
+	actualPath := processExecutablePath(pid)
+	if expectedPath != "" {
+		if actualPath == "" || !strings.EqualFold(actualPath, expectedPath) {
+			return fmt.Errorf("process identity changed or is unavailable; scan again before ending it")
+		}
+	} else {
+		processes, err := listProcesses()
+		if err != nil {
+			return err
+		}
+		matched := false
+		for _, process := range processes {
+			if process.PID == pid && strings.EqualFold(process.Name, expectedName) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("process identity changed or is unavailable; scan again before ending it")
+		}
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := process.Kill(); err != nil {
+		return fmt.Errorf("end process: %w", err)
+	}
+	return nil
 }

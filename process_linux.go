@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const platformName = "linux"
@@ -51,4 +52,37 @@ func fingerprintProcess(process *Process) {
 func listCaptureExclusions([]Process) ([]CaptureExclusion, error) {
 	// Linux has no portable, system-wide window capture-exclusion query.
 	return []CaptureExclusion{}, nil
+}
+
+func endTrackedProcess(pid int, expectedName, expectedPath string) error {
+	if pid <= 1 {
+		return fmt.Errorf("invalid process ID")
+	}
+	processDir := filepath.Join("/proc", strconv.Itoa(pid))
+	nameBytes, err := os.ReadFile(filepath.Join(processDir, "comm"))
+	if err != nil {
+		return fmt.Errorf("process is no longer running: %w", err)
+	}
+	if expectedPath != "" {
+		actualPath, err := os.Readlink(filepath.Join(processDir, "exe"))
+		if err != nil || !sameProcessPath(actualPath, expectedPath) {
+			return fmt.Errorf("process identity changed since the scan; scan again before ending it")
+		}
+	} else if !strings.EqualFold(strings.TrimSpace(string(nameBytes)), expectedName) {
+		return fmt.Errorf("process identity changed since the scan; scan again before ending it")
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("send close request: %w", err)
+	}
+	return nil
+}
+
+func sameProcessPath(actual, expected string) bool {
+	actual = strings.TrimSuffix(actual, " (deleted)")
+	expected = strings.TrimSuffix(expected, " (deleted)")
+	return filepath.Clean(actual) == filepath.Clean(expected)
 }

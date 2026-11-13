@@ -18,3 +18,7 @@ func listCaptureExclusions([]Process) ([]CaptureExclusion, error) {
 }
 
 func fingerprintProcess(*Process) {}
+
+func endTrackedProcess(int, string, string) error {
+	return fmt.Errorf("ending applications is not supported on %s", runtime.GOOS)
+}

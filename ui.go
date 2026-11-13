@@ -17,7 +17,9 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -39,8 +41,8 @@ type desktopMonitor struct {
 	startButton  *widget.Button
 	scanButton   *widget.Button
 	status       *widget.Label
-	results      *widget.Entry
-	historyView  *widget.Entry
+	results      *fyne.Container
+	historyView  *fyne.Container
 	logoView     *canvas.Image
 	monitoring   bool
 	stopTicker   chan struct{}
@@ -75,33 +77,32 @@ func (m *desktopMonitor) buildWindow() {
 	m.logoView = canvas.NewImageFromResource(m.regularIcon)
 	m.logoView.FillMode = canvas.ImageFillContain
 	m.logoView.ScaleMode = canvas.ImageScaleSmooth
-	header := container.NewHBox(
-		container.NewGridWrap(fyne.NewSize(64, 64), m.logoView),
-		container.NewVBox(title, intro),
-	)
+	logo := container.NewGridWrap(fyne.NewSize(56, 56), m.logoView)
+	header := container.NewBorder(nil, nil, logo, nil, container.NewVBox(title, intro))
 
 	m.interval = widget.NewEntry()
 	m.interval.SetText(strconv.Itoa(m.savedInterval()))
-	intervalForm := widget.NewForm(widget.NewFormItem("Scan interval (seconds)", m.interval))
+	m.interval.OnChanged = m.intervalChanged
+	intervalInput := container.NewGridWrap(fyne.NewSize(76, 38), m.interval)
 	m.status = widget.NewLabel("Monitoring is stopped")
-	m.results = widget.NewMultiLineEntry()
-	m.results.Disable()
-	m.results.SetText("No scan has run yet. Start monitoring or scan now.")
-	m.historyView = widget.NewMultiLineEntry()
-	m.historyView.Disable()
-	m.historyView.SetText("No detection history yet.")
+	m.results = container.NewVBox(widget.NewLabel("No scan has run yet. Start monitoring or scan now."))
+	m.historyView = container.NewVBox(widget.NewLabel("No detection history yet."))
 
 	m.scanButton = widget.NewButton("Scan now", m.scanNow)
 	m.startButton = widget.NewButton("Start monitoring", m.toggleMonitoring)
+	settings := container.NewHBox(
+		widget.NewLabel("Scan every"), intervalInput, widget.NewLabel("seconds"),
+		m.startButton, m.scanButton,
+	)
 	note := widget.NewLabel("Matches are indicators for review, not proof of cheating. Capture exclusion checks are available on Windows only.")
 	note.Wrapping = fyne.TextWrapWord
 
 	resultsTabs := container.NewAppTabs(
-		container.NewTabItem("Current scan", m.results),
-		container.NewTabItem("Detection history", m.historyView),
+		container.NewTabItem("Current scan", container.NewVScroll(m.results)),
+		container.NewTabItem("Detection history", container.NewVScroll(m.historyView)),
 	)
 	content := container.NewBorder(
-		container.NewVBox(header, intervalForm, container.NewHBox(m.startButton, m.scanButton), m.status),
+		container.NewVBox(header, settings, m.status),
 		note,
 		nil,
 		nil,
@@ -158,11 +159,8 @@ func (m *desktopMonitor) toggleMonitoring() {
 	}
 	m.app.Preferences().SetInt("scan-interval-seconds", seconds)
 	m.monitoring = true
-	m.interval.Disable()
 	m.startButton.SetText("Stop monitoring")
 	m.status.SetText(fmt.Sprintf("Monitoring every %d seconds…", seconds))
-	m.stopTicker = make(chan struct{})
-	stop := m.stopTicker
 	if m.tray != nil {
 		m.tray.SetSystemTrayMenu(fyne.NewMenu("Cheating Tool Detector",
 			fyne.NewMenuItem("Show window", func() { m.window.Show() }),
@@ -171,7 +169,30 @@ func (m *desktopMonitor) toggleMonitoring() {
 			fyne.NewMenuItem("Quit", func() { m.app.Quit() }),
 		))
 	}
+	m.startMonitoringTicker(seconds)
 	m.scanNow()
+}
+
+func (m *desktopMonitor) intervalChanged(value string) {
+	if !m.monitoring {
+		return
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || seconds < minScanInterval || seconds > maxScanInterval {
+		m.status.SetText(fmt.Sprintf("Choose an interval from %d to %d seconds; the current interval is unchanged.", minScanInterval, maxScanInterval))
+		return
+	}
+	m.app.Preferences().SetInt("scan-interval-seconds", seconds)
+	m.startMonitoringTicker(seconds)
+	m.status.SetText(fmt.Sprintf("Monitoring every %d seconds", seconds))
+}
+
+func (m *desktopMonitor) startMonitoringTicker(seconds int) {
+	if m.stopTicker != nil {
+		close(m.stopTicker)
+	}
+	m.stopTicker = make(chan struct{})
+	stop := m.stopTicker
 	go func() {
 		ticker := time.NewTicker(time.Duration(seconds) * time.Second)
 		defer ticker.Stop()
@@ -201,7 +222,8 @@ func (m *desktopMonitor) scanNow() {
 			m.scanButton.Enable()
 			if err != nil {
 				m.status.SetText("Scan failed: " + err.Error())
-				m.results.SetText("The scan could not be completed. Check process visibility and try again.")
+				m.results.RemoveAll()
+				m.results.Add(widget.NewCard("Scan failed", "Check process visibility and try again.", widget.NewLabel(err.Error())))
 				return
 			}
 			m.applyReport(report)
@@ -210,62 +232,75 @@ func (m *desktopMonitor) scanNow() {
 }
 
 func (m *desktopMonitor) applyReport(report Report) {
-	var output strings.Builder
-	if len(report.Findings) == 0 {
-		output.WriteString("No configured process indicators matched.\n")
-	} else {
-		output.WriteString("PROCESS INDICATORS\n")
-		for _, finding := range report.Findings {
-			fmt.Fprintf(&output, "• %s (PID %d) — %s; %s matched %q\n", finding.Process, finding.PID, finding.Rule, finding.MatchType, finding.Indicator)
-			writeFingerprintDetails(&output, finding.ExecutablePath, finding.ExecutableSHA256)
-		}
-	}
-	output.WriteString("\nSCREEN-CAPTURE EXCLUSIONS\n")
-	if len(report.CaptureExclusions) == 0 {
-		if report.Platform == "linux" {
-			output.WriteString("This signal is not available on Linux.\n")
-		} else {
-			output.WriteString("No windows marked with a capture-exclusion affinity.\n")
-		}
-	} else {
-		for _, exclusion := range report.CaptureExclusions {
-			processName := exclusion.Process
-			if processName == "" {
-				processName = "Unknown application"
+	m.results.RemoveAll()
+	items := make(map[int]*reviewItem)
+	var orderedItems []*reviewItem
+	getItem := func(process Process) *reviewItem {
+		if item, ok := items[process.PID]; ok {
+			if item.Process.ExecutablePath == "" {
+				item.Process.ExecutablePath = process.ExecutablePath
 			}
-			fmt.Fprintf(&output, "• %s (PID %d) — %s; window %q\n", processName, exclusion.PID, exclusion.Affinity, exclusion.Window)
-			writeFingerprintDetails(&output, exclusion.ExecutablePath, exclusion.ExecutableSHA256)
+			if item.Process.ExecutableSHA256 == "" {
+				item.Process.ExecutableSHA256 = process.ExecutableSHA256
+			}
+			return item
+		}
+		item := &reviewItem{Process: process}
+		items[process.PID] = item
+		orderedItems = append(orderedItems, item)
+		return item
+	}
+	for _, finding := range report.Findings {
+		item := getItem(Process{PID: finding.PID, Name: finding.Process, ExecutablePath: finding.ExecutablePath, ExecutableSHA256: finding.ExecutableSHA256})
+		item.Signals = append(item.Signals, fmt.Sprintf("%s: %s matched %q", finding.Rule, finding.MatchType, finding.Indicator))
+	}
+	for _, exclusion := range report.CaptureExclusions {
+		name := exclusion.Process
+		if name == "" {
+			name = "Unknown application"
+		}
+		item := getItem(Process{PID: exclusion.PID, Name: name, ExecutablePath: exclusion.ExecutablePath, ExecutableSHA256: exclusion.ExecutableSHA256})
+		item.Signals = append(item.Signals, fmt.Sprintf("Window excluded from capture (%s): %q", exclusion.Affinity, exclusion.Window))
+	}
+	if len(orderedItems) == 0 {
+		m.results.Add(widget.NewCard("No matches", "No configured indicators matched.", nil))
+	} else {
+		m.results.Add(widget.NewLabelWithStyle(fmt.Sprintf("Applications to review · %d", len(orderedItems)), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+		for _, item := range orderedItems {
+			m.results.Add(m.reviewCard(item))
 		}
 	}
-	m.results.SetText(output.String())
-	var historyText strings.Builder
-	for i := len(report.History) - 1; i >= 0; i-- {
-		event := report.History[i]
-		fmt.Fprintf(&historyText, "%s  %s  %s", event.At, event.Event, event.Application)
-		if len(event.PIDs) > 0 {
-			fmt.Fprintf(&historyText, " (PID(s) %s)", joinPIDs(event.PIDs))
-		}
-		if len(event.Windows) > 0 {
-			fmt.Fprintf(&historyText, "\n  Window(s): %s", strings.Join(event.Windows, ", "))
-		}
-		if event.FromStatus != "" || event.ToStatus != "" {
-			fmt.Fprintf(&historyText, "\n  %s → %s", event.FromStatus, event.ToStatus)
-		}
-		if event.ExecutablePath != "" {
-			fmt.Fprintf(&historyText, "\n  %s", event.ExecutablePath)
-		}
-		if event.ExecutableSHA256 != "" {
-			fmt.Fprintf(&historyText, "\n  SHA-256 %s", event.ExecutableSHA256)
-		}
-		historyText.WriteString("\n\n")
+	if report.Platform == "linux" {
+		m.results.Add(widget.NewLabel("Screen-capture exclusion checks are not available on Linux."))
 	}
-	if historyText.Len() == 0 {
-		historyText.WriteString("No detected applications have been recorded yet.\n")
+	m.historyView.RemoveAll()
+	if len(report.History) == 0 && report.HistoryError == "" {
+		m.historyView.Add(widget.NewLabel("No detection history yet."))
+	} else {
+		for i := len(report.History) - 1; i >= 0; i-- {
+			event := report.History[i]
+			details := []string{formatHistoryTime(event.At)}
+			if len(event.PIDs) > 0 {
+				details = append(details, "PID(s) "+joinPIDs(event.PIDs))
+			}
+			if len(event.Windows) > 0 {
+				details = append(details, "Window(s): "+strings.Join(event.Windows, ", "))
+			}
+			if event.FromStatus != "" || event.ToStatus != "" {
+				details = append(details, event.FromStatus+" → "+event.ToStatus)
+			}
+			if event.ExecutablePath != "" {
+				details = append(details, event.ExecutablePath)
+			}
+			if event.ExecutableSHA256 != "" {
+				details = append(details, "SHA-256: "+event.ExecutableSHA256)
+			}
+			m.historyView.Add(m.historyCard(event, strings.Join(details, "\n")))
+		}
+		if report.HistoryError != "" {
+			m.historyView.Add(widget.NewLabel("History could not be saved: " + report.HistoryError))
+		}
 	}
-	if report.HistoryError != "" {
-		historyText.WriteString("\nHistory could not be saved: " + report.HistoryError)
-	}
-	m.historyView.SetText(historyText.String())
 
 	currentKeys := make(map[string]struct{}, len(report.Findings)+len(report.CaptureExclusions))
 	var newlyDetected []string
@@ -318,17 +353,82 @@ func (m *desktopMonitor) applyReport(report Report) {
 	m.status.SetText(status)
 }
 
-func writeFingerprintDetails(output *strings.Builder, executablePath, sha256 string) {
-	if executablePath == "" {
-		output.WriteString("  Executable path unavailable to this user.\n")
-	} else {
-		fmt.Fprintf(output, "  Executable: %s\n", executablePath)
+type reviewItem struct {
+	Process Process
+	Signals []string
+}
+
+func (m *desktopMonitor) reviewCard(item *reviewItem) fyne.CanvasObject {
+	process := item.Process
+	name := process.Name
+	if name == "" {
+		name = "Unknown application"
 	}
-	if sha256 == "" {
-		output.WriteString("  SHA-256 fingerprint unavailable.\n")
-	} else {
-		fmt.Fprintf(output, "  SHA-256: %s\n", sha256)
+	details := []string{strings.Join(item.Signals, "\n")}
+	if process.ExecutablePath != "" {
+		details = append(details, "File: "+process.ExecutablePath)
 	}
+	if process.ExecutableSHA256 != "" {
+		details = append(details, "SHA-256: "+process.ExecutableSHA256)
+	}
+	info := strings.Join(details, "\n")
+	nameLabel := widget.NewLabelWithStyle(name, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	pidLabel := widget.NewLabel(fmt.Sprintf("PID %d", process.PID))
+	showDetails := widget.NewButton("Details", func() {
+		dialog.NewInformation("Application details", info, m.window).Show()
+	})
+	actions := []fyne.CanvasObject{showDetails}
+	if process.PID > 0 && process.Name != "Unknown application" {
+		actions = append(actions, widget.NewButton("End task", func() { m.confirmEndTask(process) }))
+	}
+	mainRow := container.NewHBox(nameLabel, pidLabel, layout.NewSpacer(), container.NewHBox(actions...))
+	signal := item.Signals[0]
+	if len(item.Signals) > 1 {
+		signal += fmt.Sprintf(" · +%d more signal(s)", len(item.Signals)-1)
+	}
+	signalLabel := widget.NewLabel(signal)
+	signalLabel.Wrapping = fyne.TextWrapWord
+	return widget.NewCard("", "", container.NewVBox(mainRow, signalLabel))
+}
+
+func (m *desktopMonitor) historyCard(event HistoryEvent, details string) fyne.CanvasObject {
+	application := widget.NewLabelWithStyle(event.Application, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	metadata := widget.NewLabel(event.Event + " · " + formatHistoryTime(event.At))
+	showDetails := widget.NewButton("Details", func() {
+		dialog.NewInformation("Detection history", details, m.window).Show()
+	})
+	row := container.NewHBox(container.NewVBox(application, metadata), layout.NewSpacer(), showDetails)
+	return widget.NewCard("", "", row)
+}
+
+func formatHistoryTime(value string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	return parsed.Local().Format("Jan 2, 2006 · 3:04 PM")
+}
+
+func (m *desktopMonitor) confirmEndTask(process Process) {
+	dialog.NewConfirm("End application?",
+		fmt.Sprintf("End %s (PID %d)? The application may lose unsaved work.", process.Name, process.PID),
+		func(confirmed bool) {
+			if !confirmed {
+				return
+			}
+			m.status.SetText("Requesting application to end…")
+			go func() {
+				err := endTrackedProcess(process.PID, process.Name, process.ExecutablePath)
+				fyne.Do(func() {
+					if err != nil {
+						m.status.SetText("Could not end application: " + err.Error())
+						return
+					}
+					m.status.SetText("End request sent. Refreshing the scan…")
+					m.scanNow()
+				})
+			}()
+		}, m.window).Show()
 }
 
 func joinPIDs(pids []int) string {
